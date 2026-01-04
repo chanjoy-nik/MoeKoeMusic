@@ -2,7 +2,7 @@
 <p align="center">
     <img src="https://github.com/iAJue/MoeKoeMusic/raw/main/images/logo.png" alt="Logo" width="156" height="156">
   <h2 align="center" style="font-weight: 600">MoeKoe Music</h2>
-
+ 
   <p align="center">
     一款开源简洁高颜值的酷狗第三方客户端
     <br />
