@@ -3,7 +3,7 @@ import {
     createWindow, createTray, createTouchBar, startApiServer,
     stopApiServer, registerShortcut,
     playStartupSound, createLyricsWindow, setThumbarButtons,
-    registerProtocolHandler, sendHashAfterLoad, getTray
+    registerProtocolHandler, sendHashAfterLoad, getTray, createMvWindow
 } from './appServices.js';
 import { initializeExtensions, cleanupExtensions } from './extensions.js';
 import { setupAutoUpdater } from './updater.js';
@@ -289,3 +289,21 @@ ipcMain.on('set-tray-title', (event, title) => {
     createTray(mainWindow, t('now-playing') + title);
     mainWindow.setTitle(title);
 })
+
+
+ipcMain.handle('open-mv-window', (e, url) => {
+    return (async () => {
+        const mvWindow = createMvWindow();
+        try {
+            await mvWindow.loadURL(url);
+            mvWindow.show();
+            return true;
+        } catch (error) {
+            console.error('[open-mv-window] loadURL failed:', url, error);
+            try {
+                mvWindow.close();
+            } catch {}
+            throw error;
+        }
+    })();
+});

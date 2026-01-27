@@ -58,8 +58,16 @@
                     <i class="fas fa-question-circle"></i>
                 </a>
                 <h3>{{ selectionTypeMap[selectionType].title }}</h3>
-                <ul v-if="selectionType !== 'font'">
+                <ul v-if="selectionType !== 'font' && selectionType !== 'audioOutputDevice'">
                     <li v-for="option in selectionTypeMap[selectionType].options" :key="option" @click="selectOption(option)">
+                        {{ option.displayText }}
+                    </li>
+                </ul>
+
+                <ul v-else-if="selectionType === 'audioOutputDevice'">
+                    <li v-if="audioOutputDevicesLoading">正在获取设备列表...</li>
+                    <li v-else-if="audioOutputDeviceOptions.length === 0">未检测到音频输出设备</li>
+                    <li v-else v-for="option in audioOutputDeviceOptions" :key="option.value" @click="selectOption(option)">
                         {{ option.displayText }}
                     </li>
                 </ul>
@@ -73,14 +81,6 @@
                         <label>{{ $t('zi-ti-ming-cheng') }}</label>
                         <input type="text" v-model="fontFamilyInput" class="api-input" :placeholder="$t('qing-shu-ru-zi-ti-ming-cheng')" />
                     </div>
-                </div>
-
-                <div v-if="selectionType === 'quality'" class="compatibility-option">
-                    <label>
-                        <input type="checkbox" v-model="qualityCompatibilityMode" />
-                        {{ $t('jian-rong-mo-shi-mp3') }}
-                        <div class="compatibility-hint">{{ $t('gao-yin-zhi-shi-bai-ti-shi') }}</div>
-                    </label>
                 </div>
 
                 <div v-if="selectionType === 'highDpi'" class="scale-slider-container">
@@ -178,6 +178,7 @@ import { ref, onMounted, getCurrentInstance, onUnmounted, computed, reactive } f
 import { useI18n } from 'vue-i18n';
 import { MoeAuthStore } from '../stores/store';
 import ExtensionManager from '@/components/ExtensionManager.vue';
+import { requestMicrophonePermission } from '../utils/utils';
 
 const MoeAuth = MoeAuthStore();
 const { t } = useI18n();
@@ -205,7 +206,6 @@ const selectedSettings = ref({
     gpuAcceleration: { displayText: t('guan-bi'), value: 'off' },
     minimizeToTray: { displayText: t('da-kai'), value: 'on' },
     highDpi: { displayText: t('guan-bi'), value: 'off' },
-    qualityCompatibility: { displayText: t('guan-bi'), value: 'off' },
     dpiScale: { displayText: '1.0', value: '1.0' },
     apiMode: { displayText: t('guan-bi'), value: 'off' },
     touchBar: { displayText: t('guan-bi'), value: 'off' },
@@ -217,6 +217,8 @@ const selectedSettings = ref({
     proxyUrl: { displayText: '', value: '' },
     dataSource: { displayText: t('gai-nian-ban-xuan-xiang'), value: 'concept' },
     loudnessNormalization: { displayText: t('guan-bi'), value: 'off' },
+    pauseOnAudioOutputChange: { displayText: t('guan-bi'), value: 'off' },
+    audioOutputDevice: { displayText: '默认', value: 'default' },
 });
 
 // 设置分区配置
@@ -266,6 +268,18 @@ const settingSections = computed(() => [
                 icon: '🎚️ ',
                 showRefreshHint: true,
                 refreshHintText: t('shua-xin-hou-sheng-xiao')
+            },
+            {
+                key: 'pauseOnAudioOutputChange',
+                label: '输出设备变化自动暂停',
+                icon: '🎧 ',
+                helpLink:'https://music.moekoe.cn/guide/auto-pause-on-output-device-change.html'
+            },
+            {
+                key: 'audioOutputDevice',
+                label: '音频输出设备',
+                icon: '🔊 ',
+                helpLink:'https://music.moekoe.cn/guide/audio-output-device.html'
             },
             {
                 key: 'greetings',
@@ -418,6 +432,8 @@ const getItemIcon = (key) => {
         'font': 'fas fa-font',
         'quality': 'fas fa-headphones',
         'loudnessNormalization': 'fas fa-sliders-h',
+        'pauseOnAudioOutputChange': 'fas fa-exchange-alt',
+        'audioOutputDevice': 'fas fa-volume-up',
         'greetings': 'fas fa-comment',
         'lyricsBackground': 'fas fa-image',
         'lyricsFontSize': 'fas fa-text-height',
@@ -563,13 +579,6 @@ const selectionTypeMap = {
             { displayText: t('ju-zhong'), value: 'center' },
         ]
     },
-    qualityCompatibility: {
-        title: t('jian-rong-mo-shi'),
-        options: [
-            { displayText: t('kai-qi'), value: 'on' },
-            { displayText: t('guan-bi'), value: 'off' }
-        ]
-    },
     dpiScale: {
         title: t('suo-fang-yin-zi'),
         options: [
@@ -656,6 +665,17 @@ const selectionTypeMap = {
             { displayText: t('guan-bi'), value: 'off' }
         ]
     },
+    pauseOnAudioOutputChange: {
+        title: '输出设备变化自动暂停',
+        options: [
+            { displayText: t('da-kai'), value: 'on' },
+            { displayText: t('guan-bi'), value: 'off' }
+        ]
+    },
+    audioOutputDevice: {
+        title: '音频输出设备',
+        options: []
+    },
 
 };
 
@@ -676,14 +696,67 @@ const showRefreshHint = ref({
     statusBarLyrics: false,
 });
 
+const audioOutputDeviceOptions = ref([]);
+const audioOutputDevicesLoading = ref(false);
+
+const updateAudioOutputDeviceDisplayText = async (deviceId) => {
+    if (!deviceId || deviceId === 'default') {
+        selectedSettings.value.audioOutputDevice = { displayText: '默认', value: 'default' };
+        return;
+    }
+
+    let displayText = `已选择设备 (${deviceId.slice(0, 8)}...)`;
+    try {
+        if (navigator?.mediaDevices?.enumerateDevices) {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const matched = devices.find(d => d.kind === 'audiooutput' && d.deviceId === deviceId);
+            if (matched?.label) displayText = matched.label;
+        }
+    } catch {
+        // 忽略枚举失败
+    }
+
+    selectedSettings.value.audioOutputDevice = { displayText, value: deviceId };
+};
+
+const loadAudioOutputDevices = async () => {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) {
+        audioOutputDeviceOptions.value = [];
+        return;
+    }
+
+    audioOutputDevicesLoading.value = true;
+
+    try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const outputs = devices.filter(d => d.kind === 'audiooutput');
+
+        const options = [{ displayText: '默认', value: 'default' }];
+        let unnamedIndex = 1;
+
+        for (const output of outputs) {
+            if (!output.deviceId) continue;
+            const displayText = output.label || `输出设备 ${unnamedIndex++}`;
+            options.push({ displayText, value: output.deviceId });
+        }
+
+        const seen = new Set();
+        audioOutputDeviceOptions.value = options.filter(opt => {
+            if (seen.has(opt.value)) return false;
+            seen.add(opt.value);
+            return true;
+        });
+    } catch {
+        audioOutputDeviceOptions.value = [{ displayText: '默认', value: 'default' }];
+    } finally {
+        audioOutputDevicesLoading.value = false;
+    }
+};
+
 const openSelection = (type, helpLink) => {
     isSelectionOpen.value = true;
     selectionType.value = type;
     currentHelpLink.value = helpLink || selectionTypeMap[type]?.helpLink || '';
-
-    if (type === 'quality') {
-        qualityCompatibilityMode.value = selectedSettings.value.qualityCompatibility?.value === 'on';
-    }
 
     if (type === 'highDpi') {
         dpiScale.value = parseFloat(selectedSettings.value.dpiScale?.value || '1.0');
@@ -697,6 +770,10 @@ const openSelection = (type, helpLink) => {
     if (type === 'proxy') {
         proxyForm.url = selectedSettings.value.proxyUrl?.value || '';
     }
+
+    if (type === 'audioOutputDevice') {
+        void loadAudioOutputDevices();
+    }
 };
 
 const openHelpLink = () => {
@@ -709,7 +786,7 @@ const openHelpLink = () => {
     }
 };
 
-const selectOption = (option) => {
+const selectOption = async (option) => {
     const electronFeatures = ['desktopLyrics', 'statusBarLyrics', 'gpuAcceleration', 'minimizeToTray', 'highDpi', 'nativeTitleBar', 'touchBar', 'autoStart', 'startMinimized', 'preventAppSuspension', 'networkMode', 'poxySettings', 'apiMode', 'dataSource', 'statusBarLyrics'];
     if (!isElectron() && electronFeatures.includes(selectionType.value)) {
         window.$modal.alert(t('fei-ke-hu-duan-huan-jing-wu-fa-qi-yong'));
@@ -736,10 +813,6 @@ const selectOption = (option) => {
                 window.$modal.alert(t('gao-pin-zhi-yin-le-xu-yao-deng-lu-hou-cai-neng-bo-fango'));
                 return;
             }
-            selectedSettings.value.qualityCompatibility = {
-                value: qualityCompatibilityMode.value ? 'on' : 'off',
-                displayText: qualityCompatibilityMode.value ? t('kai-qi') : t('guan-bi')
-            };
         },
         'highDpi': () => {
             selectedSettings.value.dpiScale = {
@@ -756,9 +829,34 @@ const selectOption = (option) => {
             window.dispatchEvent(new CustomEvent('loudness-normalization-change', {
                 detail: { enabled: option.value === 'on' }
             }));
+        },
+        'pauseOnAudioOutputChange': async () => {
+            if (option.value === 'on') {
+                const granted = await requestMicrophonePermission();
+                if (!granted) {
+                    selectedSettings.value.pauseOnAudioOutputChange = {
+                        displayText: t('guan-bi'),
+                        value: 'off'
+                    };
+                    window.dispatchEvent(new CustomEvent('audio-output-device-watch-change', {
+                        detail: { enabled: false }
+                    }));
+                    window.$modal.alert('音频权限申请失败，无法启用该功能');
+                    return;
+                }
+            }
+
+            window.dispatchEvent(new CustomEvent('audio-output-device-watch-change', {
+                detail: { enabled: option.value === 'on' }
+            }));
+        },
+        'audioOutputDevice': async () => {
+            window.dispatchEvent(new CustomEvent('audio-output-device-change', {
+                detail: { deviceId: option.value }
+            }));
         }
     };
-    actions[selectionType.value]?.();
+    await actions[selectionType.value]?.();
     saveSettings();
     if(!['apiMode','font','fontUrl', 'proxy'].includes(selectionType.value)) closeSelection();
     const refreshHintTypes = ['nativeTitleBar','lyricsBackground', 'lyricsFontSize', 'gpuAcceleration', 'highDpi', 'apiMode', 'touchBar', 'preventAppSuspension', 'networkMode', 'font', 'proxy', 'dataSource', 'loudnessNormalization', 'statusBarLyrics'];
@@ -767,20 +865,20 @@ const selectOption = (option) => {
     }
 };
 
-const updateFontSetting = (key) => {
+const updateFontSetting = async (key) => {
     const prevType = selectionType.value;
     const value = key === 'font' ? (fontFamilyInput.value || '') : (fontUrlInput.value || '');
     const displayText = key === 'font' ? (value || t('mo-ren-zi-ti')) : (value || t('mo-ren-zi-ti'));
     selectionType.value = key;
-    selectOption({ displayText, value });
+    await selectOption({ displayText, value });
     selectionType.value = prevType;
 };
 
-const handleFontFocusOut = (e) => {
+const handleFontFocusOut = async (e) => {
     const container = e.currentTarget;
     if (container && e.relatedTarget && container.contains(e.relatedTarget)) return;
-    updateFontSetting('fontUrl');
-    updateFontSetting('font');
+    await updateFontSetting('fontUrl');
+    await updateFontSetting('font');
 };
 
 const isElectron = () => {
@@ -804,6 +902,7 @@ onMounted(() => {
     if (savedSettings) {
         for (const key in savedSettings) {
             if (key === 'shortcuts') continue;
+            if (key === 'audioOutputDevice') continue;
             if (key === 'proxyUrl') {
                 const value = savedSettings[key];
                 selectedSettings.value[key] = {
@@ -841,6 +940,10 @@ onMounted(() => {
     if(isElectron()){
         appVersion.value = localStorage.getItem('version');
         platform.value = window.electron.platform;
+    }
+
+    if (savedSettings?.audioOutputDevice !== undefined) {
+        void updateAudioOutputDeviceDisplayText(savedSettings.audioOutputDevice);
     }
 });
 
@@ -1131,7 +1234,6 @@ const clearShortcut = (key) => {
     shortcuts.value[key] = '';
 };
 
-const qualityCompatibilityMode = ref(false);
 const dpiScale = ref(1.0);
 
 const openResetConfirmation = async () => {
@@ -1509,28 +1611,6 @@ const installPWA = async () => {
 
 .reset-settings-button:hover {
     background-color: #e53935;
-}
-
-.compatibility-option {
-    margin-top: 15px;
-    text-align: left;
-    padding: 10px;
-    background-color: var(--background-color);
-    border-radius: 8px;
-}
-
-.compatibility-option label {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
-}
-
-.compatibility-hint {
-    margin-top: 5px;
-    font-size: 12px;
-    color: #666;
-    line-height: 21px;
 }
 
 .scale-slider-container {
